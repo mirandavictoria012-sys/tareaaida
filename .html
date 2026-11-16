@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Anatomía Humana</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&display=swap">
+<style>
+/* Layout: anatomical figure projected in light from a base on a dark stage. Title top-left, two controls bottom (Aparecer, Rayos X). Single dark look by choice. */
+:root{
+  --bg:#02040c;
+  --fg:#dbeafe;
+  --muted:#7f93b8;
+  --accent:#38bdf8;
+  --line:rgba(147,197,253,.32);
+  --panel:rgba(8,16,40,.62);
+  --font:"Space Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg);color:var(--fg);font-family:var(--font);
+  padding-block:16px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));
+  padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;justify-content:space-between;
+  overflow:hidden;position:relative;
+}
+#c{position:fixed;inset:0;width:100%;height:100%;display:block;z-index:0}
+header,footer{position:relative;z-index:1;pointer-events:none}
+h1{margin:0;font-size:18px;font-weight:600;letter-spacing:.02em}
+header p{margin:4px 0 0;font-size:13px;color:var(--muted);max-width:30ch;text-wrap:balance;line-height:1.4}
+header p.name{margin:0 0 6px;font-size:12px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);max-width:none}
+footer{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+button{
+  pointer-events:auto;font:500 14px/1 var(--font);color:var(--fg);
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:12px 22px;cursor:pointer;letter-spacing:.02em;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+}
+button:hover{background:rgba(30,58,120,.55)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button[aria-pressed="true"]{border-color:var(--accent);background:rgba(20,70,110,.6);color:#e0f7ff}
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Figura anatómica humana proyectada en luz, con vista de músculos y vista de rayos X"></canvas>
+<header>
+  <p class="name">Aida Maritza Alonzo Len</p>
+  <h1>Anatomía Humana</h1>
+  <p>Una figura anatómica proyectada en luz. Elige cómo verla.</p>
+</header>
+<footer>
+  <button id="appear" type="button">Aparecer</button>
+  <button id="xray" type="button" aria-pressed="false">Rayos X</button>
+</footer>
+
+<script>
+(function(){
+  var cv=document.getElementById('c'),ctx=cv.getContext('2d');
+  var BODY_W=300,BODY_H=420,CX=150,S=3,PAD=34,BAND=34;
+  var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var W,H,dpr,k,ox,oy,footY,cx,ringRx,ringRy,fw,fh;
+  var frame=0,rv=0,xrP=0,xrTarget=0;
+  var muscleCv,xrayCv,glowCv,figCv,fx,patCv;
+
+  /* ---------- helpers ---------- */
+  var sprites={};
+  function sprite(c){
+    if(sprites[c])return sprites[c];
+    var s=document.createElement('canvas');s.width=s.height=48;
+    var g=s.getContext('2d'),gr=g.createRadialGradient(24,24,0,24,24,24);
+    gr.addColorStop(0,c);gr.addColorStop(.3,c+'aa');gr.addColorStop(1,c+'00');
+    g.fillStyle=gr;g.fillRect(0,0,48,48);
+    return sprites[c]=s;
+  }
+  function both(c,fn){fn();c.save();c.translate(BODY_W,0);c.scale(-1,1);fn();c.restore();}
+  function ell(x,y,rx,ry,rot){return function(c){c.ellipse(x,y,rx,ry,rot||0,0,7);};}
+  function rr(x,y,w,h,r){
+    return function(c){
+      c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);
+      c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);c.lineTo(x+r,y+h);
+      c.quadraticCurveTo(x,y+h,x,y+h-r);c.lineTo(x,y+r);c.quadraticCurveTo(x,y,x+r,y);c.closePath();
+    };
+  }
+  function line(c,x1,y1,x2,y2,w){c.lineWidth=w;c.beginPath();c.moveTo(x1,y1);c.lineTo(x2,y2);c.stroke();}
+
+  /* ---------- muscle figure (écorché, front view, arms open) ---------- */
+  var T_MUSCLE=['#ee8d6c','#d05a3b','#7d2418'];
+  var T_DEEP=['#dc7551','#b34429','#6b1c12'];
+  var T_HEAD=['#f19f80','#d06043','#7d2a1c'];
+  var T_TENDON=['#fcf5e8','#e4d5be','#a99578'];
+
+  function muscle(c,path,b,ang,T){
+    c.save();c.beginPath();path(c);
+    var g=c.createRadialGradient(b[0]+b[2]*.38,b[1]+b[3]*.32,1,b[0]+b[2]/2,b[1]+b[3]/2,Math.max(b[2],b[3])*.75);
+    g.addColorStop(0,T[0]);g.addColorStop(.55,T[1]);g.addColorStop(1,T[2]);
+    c.fillStyle=g;c.fill();c.clip();
+    c.translate(b[0]+b[2]/2,b[1]+b[3]/2);c.rotate(ang);
+    var L=Math.max(b[2],b[3]),n=0;c.lineWidth=.35;
+    for(var d=-L;d<=L;d+=2.2){
+      c.strokeStyle=(n++%2)?'rgba(255,215,195,.22)':'rgba(50,5,0,.28)';
+      c.beginPath();c.moveTo(d,-L);c.lineTo(d,L);c.stroke();
+    }
+    c.restore();
+    c.save();c.beginPath();path(c);c.lineWidth=.9;c.strokeStyle='rgba(60,8,2,.9)';c.stroke();c.restore();
+  }
+
+  function baseSilhouette(c,color){
+    c.fillStyle=color;c.strokeStyle=color;c.lineCap='round';c.lineJoin='round';
+    c.beginPath();c.ellipse(150,34,16,21,0,0,7);c.fill();
+    c.fillRect(142,50,16,30);
+    c.beginPath();
+    [[112,76],[188,76],[186,150],[180,192],[186,236],[114,236],[120,192],[114,150]].forEach(function(p,i){i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1]);});
+    c.closePath();c.fill();
+    both(c,function(){
+      c.lineWidth=17;line(c,188,86,216,142,17);
+      line(c,216,142,246,196,14);
+      c.beginPath();c.arc(252,208,8,0,7);c.fill();
+      line(c,166,236,170,314,30);
+      line(c,170,314,174,394,22);
+      c.beginPath();c.ellipse(180,404,13,6,.1,0,7);c.fill();
+    });
+  }
+
+  function renderMuscle(){
+    muscleCv=document.createElement('canvas');muscleCv.width=BODY_W*S;muscleCv.height=BODY_H*S;
+    var c=muscleCv.getContext('2d');c.scale(S,S);c.lineCap='round';c.lineJoin='round';
+    baseSilhouette(c,'#4a1208');
+
+    muscle(c,rr(142,50,16,30,4),[142,50,16,30],0,T_DEEP);
+    muscle(c,ell(150,34,15.5,20.5),[134,13,32,42],0,T_HEAD);
+    c.fillStyle='rgba(40,4,0,.85)';
+    c.beginPath();c.ellipse(143,31,4,2.6,0,0,7);c.fill();
+    c.beginPath();c.ellipse(157,31,4,2.6,0,0,7);c.fill();
+    c.strokeStyle='rgba(50,5,0,.8)';c.lineWidth=1.2;
+    c.beginPath();c.moveTo(150,34);c.lineTo(148.5,42);c.lineTo(151.5,42);c.stroke();
+    c.beginPath();c.moveTo(144,48);c.quadraticCurveTo(150,51,156,48);c.stroke();
+    both(c,function(){
+      muscle(c,ell(165.5,36,2.6,5.5),[163,30,6,12],0,T_HEAD);
+      muscle(c,ell(161,44,3.2,7,-.2),[157,37,8,14],.1,T_MUSCLE);
+      /* trapezius, sternocleidomastoid */
+      muscle(c,function(c){c.moveTo(150,58);c.bezierCurveTo(158,62,176,68,192,77);c.lineTo(182,88);c.bezierCurveTo(170,85,158,85,150,89);c.closePath();},[150,58,42,31],1.15,T_DEEP);
+      muscle(c,function(c){c.moveTo(156,50);c.bezierCurveTo(163,58,159,70,151,81);c.lineTo(148,79);c.bezierCurveTo(152,68,152,58,150,52);c.closePath();},[148,50,15,31],.2,T_MUSCLE);
+      /* obliques, serratus */
+      muscle(c,function(c){c.moveTo(169,126);c.bezierCurveTo(183,130,189,150,186,180);c.bezierCurveTo(184,194,180,204,173,207);c.lineTo(167,204);c.lineTo(167,128);c.closePath();},[167,126,22,81],.3,T_DEEP);
+      for(var i=0;i<3;i++)muscle(c,ell(181.5+i*.6,108+i*7.6,5.8,3.1,.55),[176,104+i*7.6,12,8],.5,T_MUSCLE);
+      /* pectoral */
+      muscle(c,function(c){c.moveTo(151,86);c.bezierCurveTo(168,81,186,85,190,99);c.bezierCurveTo(192,113,172,126,151,122);c.closePath();},[151,81,41,45],1.05,T_MUSCLE);
+      /* abs */
+      for(var r=0;r<4;r++)muscle(c,rr(151.8,126+r*12,15.4,10.8,3),[151.8,126+r*12,15.4,10.8],0,T_MUSCLE);
+      /* hip flexor */
+      muscle(c,function(c){c.moveTo(151,205);c.lineTo(171,205);c.bezierCurveTo(179,216,177,230,169,242);c.lineTo(151,236);c.closePath();},[151,205,28,37],.5,T_DEEP);
+      /* tendons: linea alba, clavicle, sternum */
+      muscle(c,rr(149.2,86,1.6,118,.8),[149,86,2,118],0,T_TENDON);
+      muscle(c,function(c){c.moveTo(151,82);c.quadraticCurveTo(168,78,186,81);c.lineTo(186,83);c.quadraticCurveTo(168,81,151,84.5);c.closePath();},[151,78,35,7],0,T_TENDON);
+      /* deltoid, arm, forearm */
+      muscle(c,ell(194,94,11.5,17.5,-.55),[182,77,24,36],.3,T_MUSCLE);
+      muscle(c,ell(201.5,116,10.5,32,-.48),[190,84,25,66],-.48,T_MUSCLE);
+      muscle(c,ell(231,170,9,31.5,-.52),[221,138,20,66],-.52,T_DEEP);
+      muscle(c,ell(244,192,4,9,-.52),[240,183,8,18],-.52,T_TENDON);
+      muscle(c,ell(252,209,7.5,9,-.5),[244,200,16,18],0,T_DEEP);
+      c.lineCap='round';
+      var lens=[15,18,19,16],base=1.2;
+      for(var f=0;f<4;f++){
+        var a=base+(f-1.5)*.21,ln=lens[f],sx=249+f*1.6,sy=213+f*.4;
+        c.strokeStyle='rgba(60,8,2,.95)';line(c,sx,sy,sx+Math.cos(a)*ln,sy+Math.sin(a)*ln,3.4);
+        c.strokeStyle=T_MUSCLE[1];line(c,sx,sy,sx+Math.cos(a)*ln,sy+Math.sin(a)*ln,2.1);
+      }
+      c.strokeStyle='rgba(60,8,2,.95)';line(c,258,206,258+Math.cos(.15)*13,206+Math.sin(.15)*13,3.4);
+      c.strokeStyle=T_MUSCLE[1];line(c,258,206,258+Math.cos(.15)*13,206+Math.sin(.15)*13,2.1);
+      /* thigh, knee */
+      muscle(c,function(c){c.moveTo(172,236);c.bezierCurveTo(182,246,184,280,176,312);c.lineTo(168,314);c.bezierCurveTo(174,280,172,254,168,238);c.closePath();},[168,236,17,78],.1,T_DEEP);
+      muscle(c,ell(163.5,274,8.8,40,.02),[155,234,18,80],0,T_MUSCLE);
+      muscle(c,ell(158,298,6.2,16,-.12),[151,282,13,32],-.1,T_MUSCLE);
+      muscle(c,ell(166.5,314,6.2,7),[160,307,12,14],0,T_TENDON);
+      /* calf, ankle, foot */
+      muscle(c,function(c){c.moveTo(162,324);c.bezierCurveTo(158,342,159,368,164,392);c.lineTo(170,392);c.bezierCurveTo(172,368,170,342,170,324);c.closePath();},[158,324,14,68],0,T_MUSCLE);
+      muscle(c,ell(178,348,8,25,.08),[170,323,16,50],.05,T_DEEP);
+      muscle(c,ell(157.5,346,6.2,22,-.1),[151,324,13,44],-.05,T_DEEP);
+      muscle(c,ell(168,392,3.6,9),[164,383,8,18],0,T_TENDON);
+      muscle(c,ell(180,404,11.5,5.6,.1),[168,398,24,12],0,T_HEAD);
+    });
+
+    /* soft side shading so the figure reads as rounded */
+    c.save();c.globalCompositeOperation='source-atop';
+    var gs=c.createLinearGradient(0,0,BODY_W,0);
+    gs.addColorStop(0,'rgba(0,0,0,.4)');gs.addColorStop(.3,'rgba(0,0,0,0)');
+    gs.addColorStop(.7,'rgba(0,0,0,0)');gs.addColorStop(1,'rgba(0,0,0,.4)');
+    c.fillStyle=gs;c.fillRect(0,0,BODY_W,BODY_H);c.restore();
+
+    /* outer light spill: shadow-only copy of the silhouette (works on iOS) */
+    glowCv=document.createElement('canvas');
+    glowCv.width=(BODY_W+PAD*2)*S;glowCv.height=(BODY_H+PAD*2)*S;
+    var g=glowCv.getContext('2d');
+    g.shadowColor='rgba(56,189,248,1)';g.shadowBlur=30;g.shadowOffsetX=10000;g.shadowOffsetY=0;
+    g.drawImage(muscleCv,PAD*S-10000,PAD*S);g.drawImage(muscleCv,PAD*S-10000,PAD*S);
+  }
+
+  /* ---------- X-ray figure: soft tissue, organs, bones ---------- */
+  function renderXray(){
+    xrayCv=document.createElement('canvas');xrayCv.width=BODY_W*S;xrayCv.height=BODY_H*S;
+    var c=xrayCv.getContext('2d');c.scale(S,S);c.lineCap='round';c.lineJoin='round';
+    c.save();c.globalAlpha=.62;baseSilhouette(c,'#0c3560');c.restore();
+    /* lighter core along the torso and limbs */
+    c.save();c.globalCompositeOperation='source-atop';
+    var rg=c.createRadialGradient(150,150,10,150,170,150);
+    rg.addColorStop(0,'rgba(120,200,255,.28)');rg.addColorStop(1,'rgba(120,200,255,0)');
+    c.fillStyle=rg;c.fillRect(0,0,BODY_W,BODY_H);c.restore();
+    /* lungs and heart */
+    both(c,function(){
+      c.fillStyle='rgba(5,25,55,.55)';c.strokeStyle='rgba(150,210,245,.55)';c.lineWidth=1.2;
+      c.beginPath();c.ellipse(168,112,15,27,.06,0,7);c.fill();c.stroke();
+    });
+    c.fillStyle='rgba(200,230,252,.42)';c.strokeStyle='rgba(210,238,255,.7)';c.lineWidth=1;
+    c.beginPath();c.moveTo(156,134);
+    c.bezierCurveTo(144,126,144,113,151,113);c.bezierCurveTo(154,113,156,115,156,117);
+    c.bezierCurveTo(156,115,158,113,161,113);c.bezierCurveTo(168,113,168,126,156,134);c.fill();c.stroke();
+    /* bones */
+    c.shadowColor='#7dd3fc';c.shadowBlur=7;
+    c.strokeStyle='#e8f7ff';c.fillStyle='#e8f7ff';
+    /* skull and jaw */
+    c.lineWidth=2.2;c.beginPath();c.ellipse(150,31,13.5,17,0,0,7);c.stroke();
+    c.beginPath();c.ellipse(144,31,3.6,3,0,0,7);c.stroke();c.beginPath();c.ellipse(156,31,3.6,3,0,0,7);c.stroke();
+    c.lineWidth=1.6;c.beginPath();c.moveTo(150,35);c.lineTo(148.5,41);c.lineTo(151.5,41);c.closePath();c.stroke();
+    c.lineWidth=2;c.beginPath();c.moveTo(139,40);c.quadraticCurveTo(150,58,161,40);c.stroke();
+    for(var i=0;i<9;i++)c.fillRect(145.6,46+i*3.4,8.8,2.4);
+    /* spine */
+    for(var y=78;y<=226;y+=6.4)c.fillRect(145.5,y,9,4.2);
+    /* sternum, ribs */
+    c.fillRect(148.4,88,3.2,38);line(c,150,126,150,134,2.2);
+    var wr=[22,28,33,36,37,35,32,27,22,18];
+    for(i=0;i<10;i++){
+      var y0=88+i*10.6,w=wr[i];
+      both(c,function(){
+        c.lineWidth=2.4;c.beginPath();c.moveTo(154,y0);c.quadraticCurveTo(150+w*1.06,y0-5,150+w*.72,y0+16);c.stroke();
+      });
+    }
+    both(c,function(){
+      /* clavicle, shoulder, arm bones */
+      line(c,152,82,185,79,3.4);
+      c.lineWidth=2.4;c.beginPath();c.arc(189,85,6.5,0,7);c.stroke();
+      line(c,191,90,214,140,5.6);
+      c.lineWidth=2.2;c.beginPath();c.arc(216,143,5.2,0,7);c.stroke();
+      line(c,213,148,243,193,3.4);line(c,219,146,248,190,2.8);
+      c.lineWidth=2;c.beginPath();c.ellipse(250,201,5.5,4.2,-.5,0,7);c.stroke();
+      for(var f=0;f<4;f++){
+        var a=1.2+(f-1.5)*.21,sx=249+f*1.6,sy=206+f*.4,seg=[7,6,5];
+        var px=sx,py=sy;
+        for(var s=0;s<3;s++){
+          var nx=px+Math.cos(a)*(seg[s]*(f===1||f===2?1.1:1)),ny=py+Math.sin(a)*(seg[s]*(f===1||f===2?1.1:1));
+          line(c,px,py,nx,ny,1.9);px=nx+Math.cos(a)*1.4;py=ny+Math.sin(a)*1.4;
+        }
+      }
+      line(c,255,203,262,207,2);line(c,263,208,267,210,1.9);
+      /* pelvis */
+      c.lineWidth=3;c.beginPath();c.moveTo(152,208);c.bezierCurveTo(176,186,191,190,191,214);c.bezierCurveTo(189,234,168,244,152,240);c.stroke();
+      c.lineWidth=2.4;c.beginPath();c.arc(168,243,7.4,0,7);c.stroke();
+      c.lineWidth=2;c.beginPath();c.ellipse(158,236,3.6,5,0,0,7);c.stroke();
+      /* leg bones */
+      line(c,168,250,171,312,6.4);
+      c.lineWidth=2.4;c.beginPath();c.ellipse(171,317,7.6,5.2,0,0,7);c.stroke();
+      c.lineWidth=2;c.beginPath();c.arc(171,308,3.8,0,7);c.stroke();
+      line(c,171,324,175,393,4.8);line(c,179,324,180,391,2.8);
+      c.lineWidth=2;c.beginPath();c.ellipse(176,398,5.4,3.2,0,0,7);c.stroke();
+      for(f=0;f<5;f++)line(c,177,401,184+f*2.4,408+f*.3,2);
+    });
+    c.fillRect(144,206,12,3);
+    c.beginPath();c.moveTo(144,208);c.lineTo(156,208);c.lineTo(150,240);c.closePath();c.fill();
+  }
+
+  /* ---------- layout ---------- */
+  function computeLayout(){
+    dpr=Math.min(window.devicePixelRatio||1,2);W=window.innerWidth;H=window.innerHeight;
+    cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    k=Math.min(H*.72/BODY_H,(W-24)/BODY_W);
+    ox=W/2-CX*k;oy=H*.1;cx=W/2;footY=oy+408*k;
+    ringRx=84*k;ringRy=14*k;
+    fw=Math.max(2,Math.round(BODY_W*k*dpr));fh=Math.max(2,Math.round(BODY_H*k*dpr));
+    figCv=document.createElement('canvas');figCv.width=fw;figCv.height=fh;fx=figCv.getContext('2d');
+    patCv=document.createElement('canvas');patCv.width=1;patCv.height=Math.max(3,Math.round(4*dpr));
+    var p=patCv.getContext('2d');p.fillStyle='rgba(0,0,0,.34)';p.fillRect(0,0,1,Math.max(1,Math.round(dpr)));
+  }
+
+  /* ---------- frame ---------- */
+  function drawProjector(beamA,tone){
+    var r=Math.round(56+90*tone),g=Math.round(189+30*tone),col='rgba('+r+','+g+',248,';
+    var topHW=BODY_W*k*.56,bx=ringRx*.72;
+    var gr=ctx.createLinearGradient(0,footY,0,oy-10);
+    gr.addColorStop(0,col+(.2*beamA)+')');gr.addColorStop(1,col+'0)');
+    ctx.fillStyle=gr;ctx.beginPath();
+    ctx.moveTo(cx-bx,footY);ctx.lineTo(cx-topHW,oy-10);ctx.lineTo(cx+topHW,oy-10);ctx.lineTo(cx+bx,footY);ctx.closePath();ctx.fill();
+    var pulse=.55+.15*Math.sin(frame*.05);
+    ctx.globalAlpha=pulse;
+    ctx.drawImage(sprite(tone>.5?'#7dd3fc':'#22d3ee'),cx-ringRx*1.5,footY-ringRy*2.3,ringRx*3,ringRy*4.6);
+    ctx.globalAlpha=.4;
+    ctx.drawImage(sprite('#cffafe'),cx-ringRx*.8,footY-ringRy*1.1,ringRx*1.6,ringRy*2.2);
+    ctx.globalAlpha=.55;ctx.strokeStyle=col+'.9)';ctx.lineWidth=1.2;
+    for(var i=0;i<3;i++){
+      ctx.beginPath();ctx.ellipse(cx,footY,ringRx*(.5+i*.25),ringRy*(.5+i*.25),0,0,7);ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+  }
+  function drawBar(y,alpha,tone){
+    if(alpha<=0)return;
+    var wb=BODY_W*k*.95,x0=cx-wb/2;
+    ctx.globalAlpha=alpha*.55;
+    ctx.drawImage(sprite(tone?'#7dd3fc':'#22d3ee'),x0,y-16,wb,32);
+    var g=ctx.createLinearGradient(x0,0,x0+wb,0);
+    g.addColorStop(0,'rgba(207,250,254,0)');g.addColorStop(.5,'rgba(240,253,255,1)');g.addColorStop(1,'rgba(207,250,254,0)');
+    ctx.globalAlpha=alpha;ctx.fillStyle=g;ctx.fillRect(x0,y-1.4,wb,2.8);
+    ctx.globalAlpha=1;
+  }
+
+  function tick(){
+    frame++;
+    if(rv<1)rv=Math.min(1,rv+.0062);
+    if(xrP<xrTarget)xrP=Math.min(xrTarget,xrP+.012);
+    else if(xrP>xrTarget)xrP=Math.max(xrTarget,xrP-.012);
+
+    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;
+    ctx.fillStyle='#02040c';ctx.fillRect(0,0,W,H);
+    ctx.globalCompositeOperation='lighter';
+    drawProjector(Math.min(1,rv*3),xrP);
+
+    /* build the figure: muscles above the scan line, X-ray below it */
+    var ppu=fw/BODY_W,lineX=(1-xrP)*BODY_H*ppu;
+    fx.setTransform(1,0,0,1,0,0);fx.globalCompositeOperation='source-over';fx.globalAlpha=1;
+    fx.clearRect(0,0,fw,fh);
+    fx.save();fx.beginPath();fx.rect(0,0,fw,lineX);fx.clip();fx.drawImage(muscleCv,0,0,fw,fh);fx.restore();
+    fx.save();fx.beginPath();fx.rect(0,lineX,fw,fh-lineX);fx.clip();fx.drawImage(xrayCv,0,0,fw,fh);fx.restore();
+    /* projection reveal: bright leading edge, then solid */
+    var yl=(1-rv)*(BODY_H+2*BAND)-BAND;
+    if(rv<1){
+      var tg=fx.createLinearGradient(0,yl*ppu,0,(yl+BAND*1.5)*ppu);
+      tg.addColorStop(0,'rgba(190,245,255,.9)');tg.addColorStop(1,'rgba(120,220,255,0)');
+      fx.globalCompositeOperation='source-atop';fx.fillStyle=tg;fx.fillRect(0,0,fw,fh);
+      var mg=fx.createLinearGradient(0,yl*ppu,0,(yl+BAND)*ppu);
+      mg.addColorStop(0,'rgba(0,0,0,0)');mg.addColorStop(1,'rgba(0,0,0,1)');
+      fx.globalCompositeOperation='destination-in';fx.fillStyle=mg;fx.fillRect(0,0,fw,fh);
+    }
+    /* hologram scanlines drifting upward */
+    var ph=patCv.height,off=(frame*.35*dpr)%ph;
+    fx.globalCompositeOperation='destination-out';
+    fx.save();fx.translate(0,-off);fx.fillStyle=fx.createPattern(patCv,'repeat');fx.fillRect(0,0,fw,fh+ph);fx.restore();
+    fx.globalCompositeOperation='source-over';
+
+    var flick=rv<1?.88+.12*Math.random():(Math.random()<.015?.9:1);
+    /* soft light spill behind the figure */
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=Math.min(1,rv*2)*(.22+.2*xrP)*flick;
+    ctx.drawImage(glowCv,ox-PAD*k,oy-PAD*k,(BODY_W+PAD*2)*k,(BODY_H+PAD*2)*k);
+    ctx.globalCompositeOperation='source-over';
+    ctx.globalAlpha=flick;
+    ctx.drawImage(figCv,ox,oy,BODY_W*k,BODY_H*k);
+    ctx.globalCompositeOperation='lighter';
+    ctx.globalAlpha=1;
+
+    if(rv<1){
+      var by=oy+yl*k,fade=Math.min(1,Math.min(rv*8,(1-rv)*8));
+      drawBar(by,fade,0);
+    }
+    if(xrP>.001&&xrP<.999)drawBar(oy+(1-xrP)*BODY_H*k,1,1);
+    ctx.globalAlpha=1;
+    requestAnimationFrame(tick);
+  }
+
+  /* ---------- controls ---------- */
+  var xb=document.getElementById('xray');
+  document.getElementById('appear').addEventListener('click',function(){rv=reduce?1:0;});
+  xb.addEventListener('click',function(){
+    xrTarget=xrTarget?0:1;
+    xb.setAttribute('aria-pressed',xrTarget?'true':'false');
+    if(reduce)xrP=xrTarget;
+  });
+  window.addEventListener('resize',computeLayout);
+
+  /* ---------- boot ---------- */
+  computeLayout();
+  renderMuscle();
+  renderXray();
+  if(reduce)rv=1;
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
